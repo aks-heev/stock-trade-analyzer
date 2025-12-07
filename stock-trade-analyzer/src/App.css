@@ -1,0 +1,361 @@
+:root {
+  --primary: #32a899;
+  --primary-hover: #2a9381;
+  --bg: #0f172a;
+  --bg-secondary: #1e293b;
+  --text: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --border: #475569;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.header {
+  text-align: center;
+  padding: 40px 20px;
+  margin-bottom: 40px;
+  border-bottom: 2px solid var(--border);
+}
+
+.header h1 {
+  font-size: 2.5em;
+  color: var(--primary);
+  margin-bottom: 10px;
+}
+
+.header p {
+  color: var(--text-secondary);
+  font-size: 1.1em;
+}
+
+.tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 30px;
+  border-bottom: 2px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1em;
+  font-weight: 600;
+  padding: 12px 24px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+}
+
+.tab:hover:not(:disabled) {
+  color: var(--primary);
+}
+
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+
+.card h2 {
+  margin-bottom: 20px;
+  color: var(--primary);
+  font-size: 1.5em;
+}
+
+.upload-area {
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  padding: 40px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-bottom: 20px;
+}
+
+.upload-area:hover {
+  border-color: var(--primary);
+  background: rgba(50, 168, 153, 0.05);
+}
+
+#csv-upload {
+  display: none;
+}
+
+.upload-label {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 1.1em;
+}
+
+.help-text {
+  color: var(--text-secondary);
+  font-size: 0.9em;
+  margin: 15px 0;
+}
+
+.alert {
+  padding: 15px 20px;
+  border-radius: 8px;
+  margin: 20px 0;
+  font-weight: 500;
+}
+
+.alert-error {
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 4px solid var(--error);
+  color: var(--error);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.9em;
+}
+
+.form-input {
+  padding: 10px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 1em;
+  transition: all 0.3s ease;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(50, 168, 153, 0.1);
+}
+
+.btn {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 1em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  transform: translateY(-2px);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 20px;
+}
+
+.metric-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+  transition: all 0.3s ease;
+}
+
+.metric-card:hover {
+  transform: translateY(-5px);
+  border-color: var(--primary);
+}
+
+.metric-card.success {
+  border-top: 4px solid var(--success);
+}
+
+.metric-card.danger {
+  border-top: 4px solid var(--error);
+}
+
+.metric-card.info {
+  border-top: 4px solid var(--text-secondary);
+}
+
+.metric-card.primary {
+  border-top: 4px solid var(--primary);
+}
+
+.metric-value {
+  font-size: 2em;
+  font-weight: bold;
+  color: var(--primary);
+  margin-bottom: 10px;
+}
+
+.metric-label {
+  font-size: 0.8em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.table-container {
+  overflow-x: auto;
+}
+
+.trades-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.trades-table thead {
+  background: rgba(50, 168, 153, 0.1);
+  border-bottom: 2px solid var(--border);
+}
+
+.trades-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--primary);
+  text-transform: uppercase;
+  font-size: 0.8em;
+}
+
+.trades-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.trades-table tbody tr:hover {
+  background: rgba(50, 168, 153, 0.05);
+}
+
+.trades-table .bold {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.trades-table .positive {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.trades-table .negative {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 0.8em;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-profitable {
+  background: rgba(34, 197, 94, 0.2);
+  color: var(--success);
+}
+
+.status-loss {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--error);
+}
+
+.status-open {
+  background: rgba(100, 150, 200, 0.2);
+  color: var(--text-secondary);
+}
+
+.sample-text {
+  background: var(--bg);
+  padding: 16px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+  margin-top: 16px;
+  overflow-x: auto;
+}
+
+.sample-text code {
+  color: var(--primary);
+  font-family: 'Courier New', monospace;
+  white-space: pre;
+  display: block;
+  line-height: 1.8;
+}
+
+@media (max-width: 768px) {
+  .header h1 {
+    font-size: 1.8em;
+  }
+
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .trades-table {
+    font-size: 0.8em;
+  }
+
+  .trades-table th,
+  .trades-table td {
+    padding: 8px;
+  }
+}
