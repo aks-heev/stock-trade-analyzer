@@ -4,7 +4,8 @@
 
 1. ✅ **Procfile** - Tells Render how to start the server
 2. ✅ **requirements.txt** - Python dependencies
-3. ✅ **runtime.txt** - Python version specification
+3. ✅ **runtime.txt** - Python version specification (may be ignored by Render)
+4. ✅ **.python-version** - Alternative Python version specification
 
 ## Render Setup Steps
 
@@ -26,9 +27,20 @@
 - **Start Command**: (Leave empty - Procfile will be used automatically)
   - Or manually: `uvicorn stock_analyzer_backend_v2:app --host 0.0.0.0 --port $PORT`
 
-### 3. Environment Variables (Optional)
+### 3. Environment Variables (CRITICAL)
 
-No environment variables required for basic deployment. The PORT is automatically set by Render.
+**REQUIRED**: Set Python version via environment variable:
+
+1. Go to: Settings → Environment
+2. Click "Add Environment Variable"
+3. Add:
+   - **Key**: `PYTHON_VERSION`
+   - **Value**: `3.11.9`
+4. Save
+
+**Why?** Render may ignore `runtime.txt`. Setting `PYTHON_VERSION` environment variable forces Python 3.11, which has pre-built pandas wheels.
+
+**Note**: The PORT environment variable is automatically set by Render (no need to add it manually).
 
 ### 4. Deploy
 
@@ -60,18 +72,28 @@ curl https://your-app-name.onrender.com/
 ### Build Fails
 
 #### Python Version Issue (pandas build failure)
-**Error**: `error: metadata-generation-failed` when building pandas
+**Error**: `error: metadata-generation-failed` when building pandas  
+**Error**: `==> Using Python version 3.13.4 (default)` (Render ignoring runtime.txt)
 
 **Solution**: 
-1. **Manually set Python version in Render Dashboard**:
+1. **Set PYTHON_VERSION environment variable** (MOST RELIABLE):
    - Go to your service → Settings → Environment
-   - Set "Python Version" to `3.11.9` or `3.11`
+   - Click "Add Environment Variable"
+   - Key: `PYTHON_VERSION`
+   - Value: `3.11.9`
    - Save and redeploy
    
-2. **Why this happens**: 
+2. **Alternative - Set Python Version in Settings**:
+   - Go to: Settings → Environment → Python Version dropdown
+   - Select: `3.11.9` or `3.11`
+   - Save and redeploy
+   
+3. **Why this happens**: 
+   - Render may ignore `runtime.txt` file
    - pandas 2.2.0 doesn't have pre-built wheels for Python 3.13
    - Building from source fails due to Cython/C++ compilation issues
    - Python 3.11 has pre-built wheels available
+   - Setting `PYTHON_VERSION` environment variable forces the correct version
 
 #### Other Build Issues
 - Check that `requirements.txt` has all dependencies
