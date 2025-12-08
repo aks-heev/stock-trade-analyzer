@@ -1,16 +1,28 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import pandas as pd
 import openpyxl
 from openpyxl.utils import get_column_letter
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 import traceback
+import os
+import httpx
 
 app = FastAPI(title="Stock Trade Analyzer API", version="2.0.0")
+
+# Upstox Configuration - Set these as environment variables on Render
+UPSTOX_API_KEY = os.environ.get("UPSTOX_API_KEY", "")
+UPSTOX_API_SECRET = os.environ.get("UPSTOX_API_SECRET", "")
+UPSTOX_REDIRECT_URI = os.environ.get("UPSTOX_REDIRECT_URI", "https://your-app.onrender.com/upstox/callback")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
+# In-memory token storage (use Redis/DB in production)
+upstox_tokens: Dict[str, Dict] = {}
 
 # Enable CORS
 app.add_middleware(
@@ -603,11 +615,281 @@ async def analyze_single_trade(data: Dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/upstox/callback")
-async def upstox_callback(code: str | None = None, state: str | None = None, request: Request = None):
-    # 1) Validate state (if you use it)
-    # 2) Exchange `code` for access token using Upstox token API
-    # 3) Store tokens in DB/file and redirect user to a success page
-    return {"message": "Upstox callback received", "code": code, "state": state}
+async def upstox_callback(code: str = Query(None), state: str = Query(None)):
+    """
+    OAuth callback endpoint for Upstox.
+    Exchanges authorization code for access token.
+    """
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code not received")
+    
+    try:
+        # Exchange code for access token
+        token_url = "https://api.upstox.com/v2/login/authorization/token"
+        
+        payload = {
+            "code": code,
+            "client_id": UPSTOX_API_KEY,
+            "client_secret": UPSTOX_API_SECRET,
+            "redirect_uri": UPSTOX_REDIRECT_URI,
+            "grant_type": "authorization_code"
+        }
+        
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(token_url, data=payload, headers=headers)
+            
+            if response.status_code != 200:
+                print(f"Upstox token error: {response.text}")
+                raise HTTPException(
+                    status_code=response.status_code, 
+                    detail=f"Failed to get access token: {response.text}"
+                )
+            
+            token_data = response.json()
+        
+        # Store token (use user_id from state or generate session)
+        session_id = state or "default_user"
+        upstox_tokens[session_id] = {
+            "access_token": token_data.get("access_token"),
+            "expires_at": datetime.now() + timedelta(hours=24),  # Upstox tokens valid for 1 day
+            "user_id": token_data.get("user_id"),
+            "email": token_data.get("email")
+        }
+        
+        print(f"✓ Upstox login successful for user: {token_data.get('email')}")
+        
+        # Redirect to frontend with success
+        return RedirectResponse(url=f"{FRONTEND_URL}?upstox_connected=true&session={session_id}")
+    
+    except httpx.RequestError as e:
+        print(f"Upstox callback network error: {e}")
+        raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
+    except Exception as e:
+        print(f"Upstox callback error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/upstox/auth-url")
+async def get_upstox_auth_url(state: str = Query(None)):
+    """
+    Generate Upstox authorization URL for OAuth login.
+    Frontend should redirect user to this URL.
+    """
+    if not UPSTOX_API_KEY:
+        raise HTTPException(status_code=500, detail="Upstox API key not configured")
+    
+    auth_url = (
+        f"https://api.upstox.com/v2/login/authorization/dialog"
+        f"?client_id={UPSTOX_API_KEY}"
+        f"&redirect_uri={UPSTOX_REDIRECT_URI}"
+        f"&response_type=code"
+    )
+    
+    if state:
+        auth_url += f"&state={state}"
+    
+    return {"auth_url": auth_url}
+
+
+@app.get("/upstox/profile")
+async def get_upstox_profile(session: str = Query("default_user")):
+    """Get Upstox user profile"""
+    token_info = upstox_tokens.get(session)
+    
+    if not token_info or datetime.now() > token_info.get("expires_at", datetime.min):
+        raise HTTPException(status_code=401, detail="Not authenticated with Upstox. Please login first.")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.upstox.com/v2/user/profile",
+                headers={
+                    "Authorization": f"Bearer {token_info['access_token']}",
+                    "Accept": "application/json"
+                }
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+            return response.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
+
+
+@app.get("/upstox/trades")
+async def get_upstox_trades(
+    session: str = Query("default_user"),
+    from_date: str = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: str = Query(None, description="End date (YYYY-MM-DD)")
+):
+    """
+    Fetch trade history from Upstox and analyze it.
+    Returns analyzed trades in the same format as /analyze-xlsx
+    """
+    token_info = upstox_tokens.get(session)
+    
+    if not token_info or datetime.now() > token_info.get("expires_at", datetime.min):
+        raise HTTPException(status_code=401, detail="Not authenticated with Upstox. Please login first.")
+    
+    try:
+        # Set default date range (last 30 days)
+        if not to_date:
+            to_date = datetime.now().strftime("%Y-%m-%d")
+        if not from_date:
+            from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        
+        async with httpx.AsyncClient() as client:
+            # Fetch trade book
+            response = await client.get(
+                "https://api.upstox.com/v2/order/trades/get-trades-for-day",
+                headers={
+                    "Authorization": f"Bearer {token_info['access_token']}",
+                    "Accept": "application/json"
+                }
+            )
+            
+            if response.status_code != 200:
+                print(f"Upstox trades error: {response.text}")
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+            trades_data = response.json()
+        
+        # Transform Upstox data to our format
+        trades_list = trades_data.get("data", [])
+        
+        if not trades_list:
+            return {
+                "trades": [],
+                "positions": [],
+                "metrics": {},
+                "summary": {
+                    "file_name": "Upstox API",
+                    "rows_processed": 0,
+                    "analysis_date": datetime.now().isoformat(),
+                    "total_symbols": 0
+                }
+            }
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(trades_list)
+        
+        # Map Upstox columns to our standard format
+        df = df.rename(columns={
+            'tradingsymbol': 'symbol',
+            'trade_date': 'date',
+            'transaction_type': 'order_type',
+            'average_price': 'price',
+            'traded_quantity': 'quantity',
+            'brokerage': 'commission'
+        })
+        
+        # Ensure required columns exist
+        if 'commission' not in df.columns:
+            df['commission'] = 0.0
+        
+        # Parse dates
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.dropna(subset=['date'])
+        
+        # Convert data types
+        df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype(int)
+        df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
+        df['commission'] = pd.to_numeric(df['commission'], errors='coerce').fillna(0)
+        
+        # Standardize order_type
+        df['order_type'] = df['order_type'].astype(str).str.upper().str.strip()
+        df = df[df['order_type'].isin(['BUY', 'SELL'])]
+        
+        # Match trades using FIFO
+        trades, positions = match_trades_fifo(df)
+        metrics = calculate_metrics(trades)
+        
+        return {
+            "trades": trades,
+            "positions": positions,
+            "metrics": metrics,
+            "summary": {
+                "file_name": "Upstox API",
+                "rows_processed": len(df),
+                "analysis_date": datetime.now().isoformat(),
+                "total_symbols": len(set(t['symbol'] for t in trades))
+            }
+        }
+    
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
+    except Exception as e:
+        print(f"Error fetching Upstox trades: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/upstox/holdings")
+async def get_upstox_holdings(session: str = Query("default_user")):
+    """Fetch current holdings from Upstox"""
+    token_info = upstox_tokens.get(session)
+    
+    if not token_info or datetime.now() > token_info.get("expires_at", datetime.min):
+        raise HTTPException(status_code=401, detail="Not authenticated with Upstox. Please login first.")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.upstox.com/v2/portfolio/long-term-holdings",
+                headers={
+                    "Authorization": f"Bearer {token_info['access_token']}",
+                    "Accept": "application/json"
+                }
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+            holdings_data = response.json()
+        
+        # Transform to our positions format
+        holdings = holdings_data.get("data", [])
+        positions = []
+        
+        for h in holdings:
+            positions.append({
+                "symbol": h.get("tradingsymbol", ""),
+                "quantity": int(h.get("quantity", 0)),
+                "avg_price": float(h.get("average_price", 0)),
+                "total_cost": float(h.get("average_price", 0)) * int(h.get("quantity", 0)),
+                "current_price": float(h.get("last_price", 0)),
+                "pnl": float(h.get("pnl", 0)),
+                "day_change": float(h.get("day_change", 0))
+            })
+        
+        return {"holdings": positions}
+    
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
+
+
+@app.get("/upstox/status")
+async def upstox_connection_status(session: str = Query("default_user")):
+    """Check if user is connected to Upstox"""
+    token_info = upstox_tokens.get(session)
+    
+    if not token_info:
+        return {"connected": False, "message": "Not connected"}
+    
+    if datetime.now() > token_info.get("expires_at", datetime.min):
+        return {"connected": False, "message": "Token expired"}
+    
+    return {
+        "connected": True,
+        "user_id": token_info.get("user_id"),
+        "email": token_info.get("email"),
+        "expires_at": token_info.get("expires_at").isoformat()
+    }
 
 
 if __name__ == "__main__":
