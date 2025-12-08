@@ -602,6 +602,13 @@ async def analyze_single_trade(data: Dict):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/upstox/callback")
+async def upstox_callback(code: str | None = None, state: str | None = None, request: Request = None):
+    # 1) Validate state (if you use it)
+    # 2) Exchange `code` for access token using Upstox token API
+    # 3) Store tokens in DB/file and redirect user to a success page
+    return {"message": "Upstox callback received", "code": code, "state": state}
+
 
 if __name__ == "__main__":
     import uvicorn
