@@ -12,6 +12,7 @@ import io
 import traceback
 import os
 import httpx
+import gzip
 
 app = FastAPI(title="Stock Trade Analyzer API", version="2.0.0")
 
@@ -24,6 +25,10 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
 
 # In-memory token storage (use Redis/DB in production)
 upstox_tokens: Dict[str, Dict] = {}
+
+# Instrument mapping cache: trading_symbol -> instrument_key
+instrument_cache: Dict[str, str] = {}
+instrument_cache_loaded: bool = False
 
 # Enable CORS
 app.add_middleware(
@@ -186,6 +191,9 @@ def match_trades_fifo(orders: pd.DataFrame) -> tuple:
         print(f"ERROR in match_trades_fifo: {type(e).__name__}: {e}")
         raise
     
+    # Track ISIN for each symbol
+    symbol_isin_map = {}
+    
     for idx, (_, row) in enumerate(orders.iterrows()):
         try:
             symbol = str(row.get('symbol', 'UNKNOWN')).upper().strip()
@@ -193,6 +201,11 @@ def match_trades_fifo(orders: pd.DataFrame) -> tuple:
             price = float(row.get('price', 0)) if pd.notna(row.get('price')) else 0
             quantity = int(float(row.get('quantity', 0))) if pd.notna(row.get('quantity')) else 0
             date = row['date']
+            
+            # Track ISIN for this symbol if available
+            isin = str(row.get('isin', '')).upper().strip() if pd.notna(row.get('isin')) else ''
+            if isin and symbol not in symbol_isin_map:
+                symbol_isin_map[symbol] = isin
             commission = float(row.get('commission', 0)) if pd.notna(row.get('commission', 0)) else 0
             
             if quantity <= 0:
@@ -317,13 +330,15 @@ def match_trades_fifo(orders: pd.DataFrame) -> tuple:
     positions = []
     for symbol, avg_data in stock_avg_prices.items():
         if avg_data['quantity'] > 0:
+            isin = symbol_isin_map.get(symbol, '')
             positions.append({
                 'symbol': symbol,
+                'isin': isin,
                 'quantity': avg_data['quantity'],
                 'avg_price': round(avg_data['avg_price'], 2),
                 'total_cost': round(avg_data['total_cost'], 2)
             })
-            print(f"  {symbol}: Avg Price = ₹{avg_data['avg_price']:.2f} | Remaining Qty: {avg_data['quantity']} | Total Cost: ₹{avg_data['total_cost']:.2f}")
+            print(f"  {symbol} ({isin}): Avg Price = ₹{avg_data['avg_price']:.2f} | Remaining Qty: {avg_data['quantity']} | Total Cost: ₹{avg_data['total_cost']:.2f}")
     
     print(f"DEBUG match_trades_fifo: Created {len(trades)} trades, {len(positions)} open positions\n")
     return trades, positions
@@ -402,6 +417,60 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
+async def load_instrument_cache():
+    """
+    Download and cache Upstox instrument mapping (trading_symbol -> instrument_key).
+    This is needed because Upstox API requires instrument_key (with ISIN), not just symbol.
+    """
+    global instrument_cache, instrument_cache_loaded
+    
+    if instrument_cache_loaded and len(instrument_cache) > 0:
+        return  # Already loaded
+    
+    try:
+        print("Loading Upstox instrument cache...")
+        
+        # Download NSE equity instruments JSON
+        url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            
+            if response.status_code != 200:
+                print(f"Failed to download instruments: {response.status_code}")
+                return
+            
+            # Decompress gzip
+            decompressed = gzip.decompress(response.content)
+            instruments = json.loads(decompressed)
+        
+        # Build mapping: trading_symbol -> instrument_key (for equities only)
+        for inst in instruments:
+            if inst.get("segment") == "NSE_EQ" and inst.get("instrument_type") == "EQ":
+                trading_symbol = inst.get("trading_symbol", "").upper()
+                instrument_key = inst.get("instrument_key", "")
+                
+                if trading_symbol and instrument_key:
+                    instrument_cache[trading_symbol] = instrument_key
+                    
+                    # Also map short_name if different
+                    short_name = inst.get("short_name", "").upper()
+                    if short_name and short_name != trading_symbol:
+                        instrument_cache[short_name] = instrument_key
+        
+        instrument_cache_loaded = True
+        print(f"✓ Loaded {len(instrument_cache)} instrument mappings")
+        
+    except Exception as e:
+        print(f"Error loading instrument cache: {e}")
+
+
+def get_instrument_key(symbol: str) -> Optional[str]:
+    """Get Upstox instrument_key for a trading symbol"""
+    clean_symbol = symbol.strip().upper()
+    return instrument_cache.get(clean_symbol)
+
+
 @app.post("/analyze-xlsx", response_model=AnalysisResult)
 async def analyze_xlsx(file: UploadFile = File(...), skip_rows: Optional[int] = None):
     """
@@ -439,7 +508,8 @@ async def analyze_xlsx(file: UploadFile = File(...), skip_rows: Optional[int] = 
         # Map alternative column names to standard format
         # This handles broker-specific column naming conventions
         column_mapping = {
-            'symbol': ['symbol', 'isin', 'scrip', 'stock symbol', 'ticker', 'stock name'],
+            'symbol': ['symbol', 'scrip', 'stock symbol', 'ticker', 'stock name', 'trading symbol'],
+            'isin': ['isin', 'isin code', 'isin number'],
             'date': ['date', 'date_time', 'order_date', 'execution date and time', 'execution date', 'trade date'],
             'order_type': ['order_type', 'side', 'buy_sell', 'bs', 'type', 'order status', 'trans type'],
             'price': ['price', 'rate', 'bid', 'ask', 'value', 'trade price', 'execution price'],
@@ -456,6 +526,13 @@ async def analyze_xlsx(file: UploadFile = File(...), skip_rows: Optional[int] = 
             price_from_value = True
             print(f"  ⚠ Detected 'Value' column - will need to divide by quantity")
         
+        # If symbol column is missing but isin exists, use isin as symbol fallback
+        has_symbol = 'symbol' in df.columns or any(alt in df.columns for alt in ['scrip', 'stock symbol', 'ticker', 'stock name', 'trading symbol'])
+        has_isin = 'isin' in df.columns or any(alt in df.columns for alt in ['isin code', 'isin number'])
+        
+        if not has_symbol and has_isin:
+            print(f"  ⚠ No symbol column found, will use ISIN for symbol identification")
+        
         for standard_col, alternatives in column_mapping.items():
             if standard_col not in df.columns:
                 for alt in alternatives:
@@ -463,6 +540,11 @@ async def analyze_xlsx(file: UploadFile = File(...), skip_rows: Optional[int] = 
                         df[standard_col] = df[alt]
                         print(f"  Mapped '{alt}' → '{standard_col}'")
                         break
+        
+        # If still no symbol but have ISIN, use ISIN as symbol
+        if 'symbol' not in df.columns and 'isin' in df.columns:
+            df['symbol'] = df['isin']
+            print(f"  Using ISIN as symbol fallback")
         
         print(f"✓ Columns after mapping: {list(df.columns)}")
         
@@ -913,8 +995,9 @@ async def get_upstox_quotes(
     
     Request body:
     {
-        "symbols": ["RELIANCE", "TCS", "INFY"],
-        "exchange": "NSE"  // optional, defaults to NSE
+        "symbols": [{"symbol": "RELIANCE", "isin": "INE002A01018"}, ...]
+        // OR legacy format:
+        "symbols": ["RELIANCE", "TCS", "INFY"]
     }
     
     Returns:
@@ -931,33 +1014,64 @@ async def get_upstox_quotes(
     if not token_info or datetime.now() > token_info.get("expires_at", datetime.min):
         raise HTTPException(status_code=401, detail="Not authenticated with Upstox. Please login first.")
     
-    symbols = data.get("symbols", [])
-    exchange = data.get("exchange", "NSE").upper()
+    symbols_data = data.get("symbols", [])
     
-    if not symbols:
+    if not symbols_data:
         return {"quotes": {}, "failed": []}
     
     try:
-        # Build instrument keys for Upstox API
-        # Format: EXCHANGE|SYMBOL (e.g., NSE_EQ|RELIANCE, NSE_EQ|INE002A01018)
+        # Build instrument keys
         instrument_keys = []
-        symbol_mapping = {}  # Map instrument key back to original symbol
+        symbol_to_key = {}  # Map instrument_key back to original symbol
+        failed_symbols = []
         
-        for symbol in symbols:
-            # Clean the symbol
-            clean_symbol = symbol.strip().upper()
-            # Upstox uses NSE_EQ for equity segment
-            instrument_key = f"{exchange}_EQ|{clean_symbol}"
-            instrument_keys.append(instrument_key)
-            symbol_mapping[instrument_key] = clean_symbol
+        for item in symbols_data:
+            # Handle both formats: dict with symbol/isin OR just string symbol
+            if isinstance(item, dict):
+                symbol = item.get("symbol", "").strip().upper()
+                isin = item.get("isin", "").strip().upper()
+            else:
+                symbol = str(item).strip().upper()
+                isin = ""
+            
+            if not symbol:
+                continue
+            
+            # If we have ISIN, use it directly (preferred)
+            if isin and isin.startswith("INE"):
+                instrument_key = f"NSE_EQ|{isin}"
+                instrument_keys.append(instrument_key)
+                symbol_to_key[instrument_key] = symbol
+                print(f"  ✓ Using ISIN: {symbol} -> {instrument_key}")
+            else:
+                # Fallback to instrument cache lookup
+                await load_instrument_cache()
+                instrument_key = get_instrument_key(symbol)
+                
+                if instrument_key:
+                    instrument_keys.append(instrument_key)
+                    symbol_to_key[instrument_key] = symbol
+                    print(f"  ✓ Cache lookup: {symbol} -> {instrument_key}")
+                else:
+                    failed_symbols.append(symbol)
+                    print(f"  ⚠ No ISIN or cache entry for: {symbol}")
         
-        # Upstox market quotes API
-        # API endpoint for multiple quotes
-        quotes_url = "https://api.upstox.com/v2/market-quote/quotes"
+        if not instrument_keys:
+            print(f"ERROR: No valid instrument keys found")
+            return {
+                "quotes": {},
+                "failed": failed_symbols,
+                "error": "No valid instrument keys found. Ensure ISIN is present in Excel."
+            }
+        
+        print(f"DEBUG: Fetching quotes for {len(instrument_keys)} instruments")
+        
+        # Upstox LTP API v2
+        ltp_url = "https://api.upstox.com/v2/market-quote/ltp"
         
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                quotes_url,
+                ltp_url,
                 params={"instrument_key": ",".join(instrument_keys)},
                 headers={
                     "Authorization": f"Bearer {token_info['access_token']}",
@@ -965,68 +1079,41 @@ async def get_upstox_quotes(
                 }
             )
             
+            print(f"DEBUG: LTP API response status: {response.status_code}")
+            
             if response.status_code != 200:
-                print(f"Upstox quotes error: {response.status_code} - {response.text}")
-                # Try LTP endpoint as fallback (lighter weight)
-                ltp_url = "https://api.upstox.com/v2/market-quote/ltp"
-                response = await client.get(
-                    ltp_url,
-                    params={"instrument_key": ",".join(instrument_keys)},
-                    headers={
-                        "Authorization": f"Bearer {token_info['access_token']}",
-                        "Accept": "application/json"
-                    }
-                )
-                
-                if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"Failed to fetch quotes: {response.text}"
-                    )
+                print(f"ERROR: LTP API failed: {response.status_code} - {response.text}")
+                return {
+                    "quotes": {},
+                    "failed": list(symbols),
+                    "error": f"Upstox API error: {response.status_code}"
+                }
             
             quotes_data = response.json()
+            print(f"DEBUG: Response data keys: {list(quotes_data.get('data', {}).keys())}")
         
         # Parse response
         quotes_result = {}
-        failed_symbols = []
-        
         data_dict = quotes_data.get("data", {})
         
-        for instrument_key, original_symbol in symbol_mapping.items():
-            quote_info = data_dict.get(instrument_key)
+        for instrument_key, original_symbol in symbol_to_key.items():
+            # Upstox returns keys with : instead of |
+            response_key = instrument_key.replace("|", ":")
+            quote_info = data_dict.get(response_key) or data_dict.get(instrument_key)
             
             if quote_info:
-                # Full quote response
-                if "ohlc" in quote_info:
-                    ltp = float(quote_info.get("last_price", 0))
-                    prev_close = float(quote_info.get("ohlc", {}).get("close", ltp))
-                    change = ltp - prev_close
-                    change_percent = (change / prev_close * 100) if prev_close > 0 else 0
-                    
-                    quotes_result[original_symbol] = {
-                        "symbol": original_symbol,
-                        "ltp": round(ltp, 2),
-                        "open": float(quote_info.get("ohlc", {}).get("open", 0)),
-                        "high": float(quote_info.get("ohlc", {}).get("high", 0)),
-                        "low": float(quote_info.get("ohlc", {}).get("low", 0)),
-                        "close": prev_close,
-                        "change": round(change, 2),
-                        "change_percent": round(change_percent, 2),
-                        "volume": int(quote_info.get("volume", 0))
-                    }
-                # LTP only response
-                elif "last_price" in quote_info:
-                    ltp = float(quote_info.get("last_price", 0))
-                    quotes_result[original_symbol] = {
-                        "symbol": original_symbol,
-                        "ltp": round(ltp, 2),
-                        "change": 0,
-                        "change_percent": 0
-                    }
-                else:
-                    failed_symbols.append(original_symbol)
+                ltp = float(quote_info.get("last_price", 0))
+                
+                quotes_result[original_symbol] = {
+                    "symbol": original_symbol,
+                    "ltp": round(ltp, 2),
+                    "change": 0,  # LTP endpoint doesn't provide change
+                    "change_percent": 0
+                }
+                print(f"  ✓ {original_symbol}: ₹{ltp}")
             else:
                 failed_symbols.append(original_symbol)
+                print(f"  ✗ No data for {original_symbol} ({instrument_key})")
         
         print(f"✓ Fetched quotes for {len(quotes_result)} symbols, {len(failed_symbols)} failed")
         
@@ -1071,12 +1158,15 @@ async def enrich_positions_with_prices(
     if not positions:
         return {"positions": [], "total_current_value": 0, "total_unrealized_pnl": 0}
     
-    # Extract symbols
-    symbols = [p.get("symbol", "") for p in positions if p.get("symbol")]
+    # Extract symbols with ISIN
+    symbols_with_isin = [
+        {"symbol": p.get("symbol", ""), "isin": p.get("isin", "")}
+        for p in positions if p.get("symbol")
+    ]
     
     # Fetch quotes
     try:
-        quotes_response = await get_upstox_quotes({"symbols": symbols}, session=session)
+        quotes_response = await get_upstox_quotes({"symbols": symbols_with_isin}, session=session)
         quotes = quotes_response.get("quotes", {})
     except Exception as e:
         print(f"Failed to fetch quotes for enrichment: {e}")
