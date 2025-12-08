@@ -373,6 +373,7 @@ def calculate_metrics(trades: List[Dict]) -> Dict:
 
 # API Routes
 @app.get("/")
+@app.head("/")
 async def root():
     return {
         "message": "Stock Trade Analyzer API v2.0.0",

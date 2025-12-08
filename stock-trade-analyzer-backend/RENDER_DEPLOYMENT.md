@@ -40,6 +40,12 @@
 
 **Why?** Render may ignore `runtime.txt`. Setting `PYTHON_VERSION` environment variable forces Python 3.11, which has pre-built pandas wheels.
 
+**Optional - Health Check Path**:
+- If you want to use `/health` for health checks instead of `/`:
+  - Go to: Settings → Health Check Path
+  - Set to: `/health`
+  - This is optional - the root endpoint now accepts HEAD requests
+
 **Note**: The PORT environment variable is automatically set by Render (no need to add it manually).
 
 ### 4. Deploy
@@ -108,6 +114,17 @@ curl https://your-app-name.onrender.com/
 ### Port Issues
 - The app now uses `$PORT` environment variable automatically
 - No need to hardcode port numbers
+
+### Deployment Timeout / Health Check Issues
+**Error**: `==> No open ports detected, continuing to scan...` or `==> Timed Out`  
+**Error**: `405 Method Not Allowed` for HEAD requests
+
+**Solution**: 
+- The root endpoint (`/`) now accepts both GET and HEAD requests
+- Render's health check uses HEAD requests, which is now supported
+- If issues persist, configure Render to use `/health` as the health check path:
+  - Go to: Settings → Health Check Path
+  - Set to: `/health`
 
 ## Update Frontend
 
