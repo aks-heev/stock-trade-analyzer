@@ -19,7 +19,8 @@ app = FastAPI(title="Stock Trade Analyzer API", version="2.0.0")
 UPSTOX_API_KEY = os.environ.get("UPSTOX_API_KEY", "")
 UPSTOX_API_SECRET = os.environ.get("UPSTOX_API_SECRET", "")
 UPSTOX_REDIRECT_URI = os.environ.get("UPSTOX_REDIRECT_URI", "https://your-app.onrender.com/upstox/callback")
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+# FRONTEND_URL is optional - if not set, callback will return JSON instead of redirecting
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
 
 # In-memory token storage (use Redis/DB in production)
 upstox_tokens: Dict[str, Dict] = {}
@@ -663,8 +664,18 @@ async def upstox_callback(code: str = Query(None), state: str = Query(None)):
         
         print(f"✓ Upstox login successful for user: {token_data.get('email')}")
         
-        # Redirect to frontend with success
-        return RedirectResponse(url=f"{FRONTEND_URL}?upstox_connected=true&session={session_id}")
+        # If FRONTEND_URL is set, redirect there; otherwise return JSON
+        if FRONTEND_URL:
+            return RedirectResponse(url=f"{FRONTEND_URL}?upstox_connected=true&session={session_id}")
+        else:
+            # Return JSON with session info - frontend can poll /upstox/status
+            return {
+                "success": True,
+                "message": "Upstox connected successfully",
+                "session": session_id,
+                "user_id": token_data.get("user_id"),
+                "email": token_data.get("email")
+            }
     
     except httpx.RequestError as e:
         print(f"Upstox callback network error: {e}")
@@ -889,6 +900,247 @@ async def upstox_connection_status(session: str = Query("default_user")):
         "user_id": token_info.get("user_id"),
         "email": token_info.get("email"),
         "expires_at": token_info.get("expires_at").isoformat()
+    }
+
+
+@app.post("/upstox/quotes")
+async def get_upstox_quotes(
+    data: Dict,
+    session: str = Query("default_user")
+):
+    """
+    Fetch current market prices for given symbols from Upstox.
+    
+    Request body:
+    {
+        "symbols": ["RELIANCE", "TCS", "INFY"],
+        "exchange": "NSE"  // optional, defaults to NSE
+    }
+    
+    Returns:
+    {
+        "quotes": {
+            "RELIANCE": {"symbol": "RELIANCE", "ltp": 2650.50, "change": 25.30, "change_percent": 0.96},
+            "TCS": {"symbol": "TCS", "ltp": 3450.00, "change": -15.20, "change_percent": -0.44}
+        },
+        "failed": ["UNKNOWN_SYMBOL"]
+    }
+    """
+    token_info = upstox_tokens.get(session)
+    
+    if not token_info or datetime.now() > token_info.get("expires_at", datetime.min):
+        raise HTTPException(status_code=401, detail="Not authenticated with Upstox. Please login first.")
+    
+    symbols = data.get("symbols", [])
+    exchange = data.get("exchange", "NSE").upper()
+    
+    if not symbols:
+        return {"quotes": {}, "failed": []}
+    
+    try:
+        # Build instrument keys for Upstox API
+        # Format: EXCHANGE|SYMBOL (e.g., NSE_EQ|RELIANCE, NSE_EQ|INE002A01018)
+        instrument_keys = []
+        symbol_mapping = {}  # Map instrument key back to original symbol
+        
+        for symbol in symbols:
+            # Clean the symbol
+            clean_symbol = symbol.strip().upper()
+            # Upstox uses NSE_EQ for equity segment
+            instrument_key = f"{exchange}_EQ|{clean_symbol}"
+            instrument_keys.append(instrument_key)
+            symbol_mapping[instrument_key] = clean_symbol
+        
+        # Upstox market quotes API
+        # API endpoint for multiple quotes
+        quotes_url = "https://api.upstox.com/v2/market-quote/quotes"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                quotes_url,
+                params={"instrument_key": ",".join(instrument_keys)},
+                headers={
+                    "Authorization": f"Bearer {token_info['access_token']}",
+                    "Accept": "application/json"
+                }
+            )
+            
+            if response.status_code != 200:
+                print(f"Upstox quotes error: {response.status_code} - {response.text}")
+                # Try LTP endpoint as fallback (lighter weight)
+                ltp_url = "https://api.upstox.com/v2/market-quote/ltp"
+                response = await client.get(
+                    ltp_url,
+                    params={"instrument_key": ",".join(instrument_keys)},
+                    headers={
+                        "Authorization": f"Bearer {token_info['access_token']}",
+                        "Accept": "application/json"
+                    }
+                )
+                
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Failed to fetch quotes: {response.text}"
+                    )
+            
+            quotes_data = response.json()
+        
+        # Parse response
+        quotes_result = {}
+        failed_symbols = []
+        
+        data_dict = quotes_data.get("data", {})
+        
+        for instrument_key, original_symbol in symbol_mapping.items():
+            quote_info = data_dict.get(instrument_key)
+            
+            if quote_info:
+                # Full quote response
+                if "ohlc" in quote_info:
+                    ltp = float(quote_info.get("last_price", 0))
+                    prev_close = float(quote_info.get("ohlc", {}).get("close", ltp))
+                    change = ltp - prev_close
+                    change_percent = (change / prev_close * 100) if prev_close > 0 else 0
+                    
+                    quotes_result[original_symbol] = {
+                        "symbol": original_symbol,
+                        "ltp": round(ltp, 2),
+                        "open": float(quote_info.get("ohlc", {}).get("open", 0)),
+                        "high": float(quote_info.get("ohlc", {}).get("high", 0)),
+                        "low": float(quote_info.get("ohlc", {}).get("low", 0)),
+                        "close": prev_close,
+                        "change": round(change, 2),
+                        "change_percent": round(change_percent, 2),
+                        "volume": int(quote_info.get("volume", 0))
+                    }
+                # LTP only response
+                elif "last_price" in quote_info:
+                    ltp = float(quote_info.get("last_price", 0))
+                    quotes_result[original_symbol] = {
+                        "symbol": original_symbol,
+                        "ltp": round(ltp, 2),
+                        "change": 0,
+                        "change_percent": 0
+                    }
+                else:
+                    failed_symbols.append(original_symbol)
+            else:
+                failed_symbols.append(original_symbol)
+        
+        print(f"✓ Fetched quotes for {len(quotes_result)} symbols, {len(failed_symbols)} failed")
+        
+        return {
+            "quotes": quotes_result,
+            "failed": failed_symbols
+        }
+    
+    except httpx.RequestError as e:
+        print(f"Upstox quotes network error: {e}")
+        raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
+    except Exception as e:
+        print(f"Error fetching quotes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/upstox/enrich-positions")
+async def enrich_positions_with_prices(
+    data: Dict,
+    session: str = Query("default_user")
+):
+    """
+    Takes positions from Excel analysis and enriches them with current prices from Upstox.
+    
+    Request body:
+    {
+        "positions": [
+            {"symbol": "RELIANCE", "quantity": 10, "avg_price": 2500, "total_cost": 25000},
+            {"symbol": "TCS", "quantity": 5, "avg_price": 3500, "total_cost": 17500}
+        ]
+    }
+    
+    Returns positions with current_price, current_value, unrealized_pnl, pnl_percent added.
+    """
+    token_info = upstox_tokens.get(session)
+    
+    if not token_info or datetime.now() > token_info.get("expires_at", datetime.min):
+        raise HTTPException(status_code=401, detail="Not authenticated with Upstox. Please login first.")
+    
+    positions = data.get("positions", [])
+    
+    if not positions:
+        return {"positions": [], "total_current_value": 0, "total_unrealized_pnl": 0}
+    
+    # Extract symbols
+    symbols = [p.get("symbol", "") for p in positions if p.get("symbol")]
+    
+    # Fetch quotes
+    try:
+        quotes_response = await get_upstox_quotes({"symbols": symbols}, session=session)
+        quotes = quotes_response.get("quotes", {})
+    except Exception as e:
+        print(f"Failed to fetch quotes for enrichment: {e}")
+        quotes = {}
+    
+    # Enrich positions
+    enriched_positions = []
+    total_current_value = 0
+    total_unrealized_pnl = 0
+    total_cost = 0
+    
+    for pos in positions:
+        symbol = pos.get("symbol", "").upper().strip()
+        quantity = pos.get("quantity", 0)
+        avg_price = pos.get("avg_price", 0)
+        position_cost = pos.get("total_cost", avg_price * quantity)
+        
+        enriched = {
+            "symbol": symbol,
+            "quantity": quantity,
+            "avg_price": round(avg_price, 2),
+            "total_cost": round(position_cost, 2)
+        }
+        
+        # Add live price data if available
+        quote = quotes.get(symbol)
+        if quote:
+            current_price = quote.get("ltp", 0)
+            current_value = current_price * quantity
+            unrealized_pnl = current_value - position_cost
+            pnl_percent = (unrealized_pnl / position_cost * 100) if position_cost > 0 else 0
+            
+            enriched.update({
+                "current_price": round(current_price, 2),
+                "current_value": round(current_value, 2),
+                "unrealized_pnl": round(unrealized_pnl, 2),
+                "pnl_percent": round(pnl_percent, 2),
+                "day_change": quote.get("change", 0),
+                "day_change_percent": quote.get("change_percent", 0),
+                "price_available": True
+            })
+            
+            total_current_value += current_value
+            total_unrealized_pnl += unrealized_pnl
+        else:
+            enriched.update({
+                "current_price": None,
+                "current_value": None,
+                "unrealized_pnl": None,
+                "pnl_percent": None,
+                "price_available": False
+            })
+        
+        total_cost += position_cost
+        enriched_positions.append(enriched)
+    
+    total_pnl_percent = (total_unrealized_pnl / total_cost * 100) if total_cost > 0 else 0
+    
+    return {
+        "positions": enriched_positions,
+        "total_cost": round(total_cost, 2),
+        "total_current_value": round(total_current_value, 2),
+        "total_unrealized_pnl": round(total_unrealized_pnl, 2),
+        "total_pnl_percent": round(total_pnl_percent, 2)
     }
 
 
