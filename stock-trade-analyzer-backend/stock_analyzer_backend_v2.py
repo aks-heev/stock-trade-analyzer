@@ -1023,6 +1023,7 @@ async def get_upstox_quotes(
         # Build instrument keys
         instrument_keys = []
         symbol_to_key = {}  # Map instrument_key back to original symbol
+        symbol_lookup = {}  # Also map NSE_EQ:SYMBOL to original symbol (API returns this format)
         failed_symbols = []
         
         for item in symbols_data:
@@ -1037,8 +1038,11 @@ async def get_upstox_quotes(
             if not symbol:
                 continue
             
+            # Always add symbol-based lookup (API returns NSE_EQ:SYMBOL in response keys)
+            symbol_lookup[f"NSE_EQ:{symbol}"] = symbol
+            
             # If we have ISIN, use it directly (preferred)
-            if isin and isin.startswith("INE"):
+            if isin and (isin.startswith("INE") or isin.startswith("INF")):
                 instrument_key = f"NSE_EQ|{isin}"
                 instrument_keys.append(instrument_key)
                 symbol_to_key[instrument_key] = symbol
@@ -1085,23 +1089,23 @@ async def get_upstox_quotes(
                 print(f"ERROR: LTP API failed: {response.status_code} - {response.text}")
                 return {
                     "quotes": {},
-                    "failed": list(symbols),
+                    "failed": list(failed_symbols),
                     "error": f"Upstox API error: {response.status_code}"
                 }
             
             quotes_data = response.json()
             print(f"DEBUG: Response data keys: {list(quotes_data.get('data', {}).keys())}")
         
-        # Parse response
+        # Parse response - API returns keys as NSE_EQ:SYMBOL (not NSE_EQ:ISIN)
         quotes_result = {}
         data_dict = quotes_data.get("data", {})
         
-        for instrument_key, original_symbol in symbol_to_key.items():
-            # Upstox returns keys with : instead of |
-            response_key = instrument_key.replace("|", ":")
-            quote_info = data_dict.get(response_key) or data_dict.get(instrument_key)
+        # Look up by symbol-based key (NSE_EQ:SYMBOL) since API returns that format
+        for response_key, quote_info in data_dict.items():
+            # response_key is like "NSE_EQ:NHPC"
+            original_symbol = symbol_lookup.get(response_key)
             
-            if quote_info:
+            if original_symbol and quote_info:
                 ltp = float(quote_info.get("last_price", 0))
                 
                 quotes_result[original_symbol] = {
@@ -1111,9 +1115,15 @@ async def get_upstox_quotes(
                     "change_percent": 0
                 }
                 print(f"  ✓ {original_symbol}: ₹{ltp}")
-            else:
-                failed_symbols.append(original_symbol)
-                print(f"  ✗ No data for {original_symbol} ({instrument_key})")
+        
+        # Find which symbols didn't get data
+        symbols_with_data = set(quotes_result.keys())
+        all_requested_symbols = set(symbol_lookup.values())
+        missing_symbols = all_requested_symbols - symbols_with_data
+        failed_symbols.extend(missing_symbols)
+        
+        if missing_symbols:
+            print(f"  ⚠ Missing data for: {', '.join(missing_symbols)}")
         
         print(f"✓ Fetched quotes for {len(quotes_result)} symbols, {len(failed_symbols)} failed")
         
