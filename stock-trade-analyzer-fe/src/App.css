@@ -370,3 +370,140 @@ body {
     padding: 8px;
   }
 }
+
+/* Upstox Integration Styles */
+.btn-upstox {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: white;
+  padding: 16px 32px;
+  font-size: 1.1em;
+  border-radius: 12px;
+  transition: all 0.3s ease;
+}
+
+.btn-upstox:hover:not(:disabled) {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(99, 102, 241, 0.3);
+}
+
+.btn-secondary {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--bg-secondary);
+  border-color: var(--primary);
+}
+
+.btn-danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error);
+  border: 1px solid var(--error);
+}
+
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.upstox-connect {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.upstox-connect ul {
+  text-align: left;
+  display: inline-block;
+  color: var(--text-secondary);
+}
+
+.upstox-connect ul li {
+  margin: 8px 0;
+}
+
+.upstox-connected {
+  padding: 20px 0;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  background: rgba(34, 197, 94, 0.1);
+  border-radius: 12px;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  margin-bottom: 20px;
+}
+
+.status-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.status-indicator.connected {
+  background: var(--success);
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.5);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+.user-email {
+  color: var(--text-secondary);
+  font-size: 0.9em;
+  margin-left: auto;
+}
+
+.upstox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.header-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 15px;
+  padding: 8px 16px;
+  background: rgba(34, 197, 94, 0.1);
+  border-radius: 20px;
+  font-size: 0.9em;
+  color: var(--success);
+}
+
+@media (max-width: 768px) {
+  .upstox-actions {
+    flex-direction: column;
+  }
+
+  .upstox-actions .btn {
+    width: 100%;
+    margin-right: 0 !important;
+  }
+
+  .connection-status {
+    flex-wrap: wrap;
+  }
+
+  .user-email {
+    width: 100%;
+    margin-left: 22px;
+    margin-top: 5px;
+  }
+}

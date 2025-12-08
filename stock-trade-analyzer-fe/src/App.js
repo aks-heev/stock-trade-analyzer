@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
@@ -15,9 +15,110 @@ const TradeAnalyzer = () => {
     commission: 0
   });
   const [singleTradeResult, setSingleTradeResult] = useState(null);
+  
+  // Upstox state
+  const [upstoxConnected, setUpstoxConnected] = useState(false);
+  const [upstoxUser, setUpstoxUser] = useState(null);
+  const [upstoxLoading, setUpstoxLoading] = useState(false);
+  const [upstoxHoldings, setUpstoxHoldings] = useState(null);
+  const [sessionId, setSessionId] = useState(() => {
+    return localStorage.getItem('upstox_session') || `session_${Date.now()}`;
+  });
 
   // API Base URL - uses environment variable or defaults to Render URL
   const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://stock-trade-analyzer-k7k4.onrender.com';
+
+  // Check Upstox connection on mount and URL params
+  useEffect(() => {
+    // Save session to localStorage
+    localStorage.setItem('upstox_session', sessionId);
+    
+    // Check URL params for Upstox callback
+    const urlParams = new URLSearchParams(window.location.search);
+    const connected = urlParams.get('upstox_connected');
+    const session = urlParams.get('session');
+    
+    if (connected === 'true' && session) {
+      setSessionId(session);
+      localStorage.setItem('upstox_session', session);
+      setActiveTab('upstox'); // Switch to Upstox tab after connection
+      // Clean URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    
+    // Check connection status
+    checkUpstoxStatus();
+  }, []);
+
+  // Check Upstox connection status
+  const checkUpstoxStatus = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/upstox/status?session=${sessionId}`);
+      if (response.data.connected) {
+        setUpstoxConnected(true);
+        setUpstoxUser(response.data);
+      } else {
+        setUpstoxConnected(false);
+        setUpstoxUser(null);
+      }
+    } catch (err) {
+      console.log('Upstox not connected');
+      setUpstoxConnected(false);
+    }
+  };
+
+  // Connect to Upstox
+  const connectUpstox = async () => {
+    try {
+      setUpstoxLoading(true);
+      const response = await axios.get(`${API_BASE_URL}/upstox/auth-url?state=${sessionId}`);
+      // Redirect to Upstox login
+      window.location.href = response.data.auth_url;
+    } catch (err) {
+      setError('Failed to get Upstox auth URL: ' + (err.response?.data?.detail || err.message));
+      setUpstoxLoading(false);
+    }
+  };
+
+  // Fetch trades from Upstox
+  const fetchUpstoxTrades = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await axios.get(`${API_BASE_URL}/upstox/trades?session=${sessionId}`);
+      setAnalysisData(response.data);
+      setActiveTab('results');
+    } catch (err) {
+      const errorMessage = err.response?.data?.detail || err.message;
+      setError('Failed to fetch Upstox trades: ' + errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch holdings from Upstox
+  const fetchUpstoxHoldings = async () => {
+    try {
+      setUpstoxLoading(true);
+      setError(null);
+      const response = await axios.get(`${API_BASE_URL}/upstox/holdings?session=${sessionId}`);
+      setUpstoxHoldings(response.data.holdings);
+    } catch (err) {
+      const errorMessage = err.response?.data?.detail || err.message;
+      setError('Failed to fetch holdings: ' + errorMessage);
+    } finally {
+      setUpstoxLoading(false);
+    }
+  };
+
+  // Disconnect Upstox (clear local session)
+  const disconnectUpstox = () => {
+    localStorage.removeItem('upstox_session');
+    setSessionId(`session_${Date.now()}`);
+    setUpstoxConnected(false);
+    setUpstoxUser(null);
+    setUpstoxHoldings(null);
+  };
 
   // File Upload Handler
   const handleFileChange = (e) => {
@@ -396,11 +497,144 @@ TCS     | 2024-01-20 | BUY       | 3500  | 5        | 17.5
     </div>
   );
 
+  // Render Upstox Tab
+  const renderUpstoxTab = () => (
+    <div className="card">
+      <h2>🔗 Upstox Integration</h2>
+      
+      {!upstoxConnected ? (
+        <div className="upstox-connect">
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '20px' }}>
+            Connect your Upstox account to automatically import and analyze your trades.
+          </p>
+          <button 
+            className="btn btn-upstox" 
+            onClick={connectUpstox}
+            disabled={upstoxLoading}
+          >
+            {upstoxLoading ? '⏳ Connecting...' : '🔐 Connect Upstox Account'}
+          </button>
+          <div className="help-text" style={{ marginTop: '20px' }}>
+            <strong>What you'll get:</strong>
+            <ul style={{ marginTop: '10px', paddingLeft: '20px' }}>
+              <li>Automatic trade history import</li>
+              <li>Real-time holdings with P&L</li>
+              <li>FIFO-based trade analysis</li>
+            </ul>
+          </div>
+        </div>
+      ) : (
+        <div className="upstox-connected">
+          <div className="connection-status">
+            <span className="status-indicator connected"></span>
+            <span>Connected to Upstox</span>
+            {upstoxUser?.email && <span className="user-email">({upstoxUser.email})</span>}
+          </div>
+          
+          <div className="upstox-actions">
+            <button 
+              className="btn btn-primary" 
+              onClick={fetchUpstoxTrades}
+              disabled={loading}
+              style={{ marginRight: '10px' }}
+            >
+              {loading ? '⏳ Loading...' : '📊 Analyze My Trades'}
+            </button>
+            <button 
+              className="btn btn-secondary" 
+              onClick={fetchUpstoxHoldings}
+              disabled={upstoxLoading}
+              style={{ marginRight: '10px' }}
+            >
+              {upstoxLoading ? '⏳ Loading...' : '📈 View Holdings'}
+            </button>
+            <button 
+              className="btn btn-danger" 
+              onClick={disconnectUpstox}
+            >
+              🔓 Disconnect
+            </button>
+          </div>
+
+          {/* Holdings Display */}
+          {upstoxHoldings && upstoxHoldings.length > 0 && (
+            <div style={{ marginTop: '30px' }}>
+              <h3 style={{ color: 'var(--primary)', marginBottom: '15px' }}>📈 Current Holdings</h3>
+              <div className="table-container">
+                <table className="trades-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Quantity</th>
+                      <th>Avg Price</th>
+                      <th>Current Price</th>
+                      <th>Total Cost</th>
+                      <th>P&L</th>
+                      <th>Day Change</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {upstoxHoldings.map((holding, idx) => (
+                      <tr key={idx}>
+                        <td className="bold">{holding.symbol}</td>
+                        <td>{holding.quantity}</td>
+                        <td>₹{holding.avg_price?.toFixed(2)}</td>
+                        <td>₹{holding.current_price?.toFixed(2)}</td>
+                        <td>₹{holding.total_cost?.toFixed(2)}</td>
+                        <td className={holding.pnl > 0 ? 'positive' : holding.pnl < 0 ? 'negative' : ''}>
+                          ₹{holding.pnl?.toFixed(2)}
+                        </td>
+                        <td className={holding.day_change > 0 ? 'positive' : holding.day_change < 0 ? 'negative' : ''}>
+                          {holding.day_change?.toFixed(2)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td>Total</td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td>₹{upstoxHoldings.reduce((sum, h) => sum + (h.total_cost || 0), 0).toFixed(2)}</td>
+                      <td className={upstoxHoldings.reduce((sum, h) => sum + (h.pnl || 0), 0) > 0 ? 'positive' : 'negative'}>
+                        ₹{upstoxHoldings.reduce((sum, h) => sum + (h.pnl || 0), 0).toFixed(2)}
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {upstoxHoldings && upstoxHoldings.length === 0 && (
+            <div className="alert" style={{ marginTop: '20px', background: 'rgba(100,150,200,0.1)', borderLeft: '4px solid var(--text-secondary)' }}>
+              No holdings found in your Upstox account.
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="alert alert-error" style={{ marginTop: '20px' }}>
+          ⚠️ {error}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="container">
       <div className="header">
         <h1>📈 Stock Trade Analyzer</h1>
         <p>Analyze your trading performance with FIFO algorithm</p>
+        {upstoxConnected && (
+          <div className="header-status">
+            <span className="status-indicator connected"></span>
+            <span>Upstox Connected</span>
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -410,6 +644,12 @@ TCS     | 2024-01-20 | BUY       | 3500  | 5        | 17.5
           onClick={() => setActiveTab('upload')}
         >
           📤 Upload File
+        </button>
+        <button 
+          className={`tab ${activeTab === 'upstox' ? 'active' : ''}`}
+          onClick={() => setActiveTab('upstox')}
+        >
+          🔗 Upstox {upstoxConnected && '✓'}
         </button>
         <button 
           className={`tab ${activeTab === 'results' ? 'active' : ''}`}
@@ -428,6 +668,7 @@ TCS     | 2024-01-20 | BUY       | 3500  | 5        | 17.5
 
       {/* Tab Content */}
       {activeTab === 'upload' && renderUploadTab()}
+      {activeTab === 'upstox' && renderUpstoxTab()}
       {activeTab === 'results' && renderResultsTab()}
       {activeTab === 'single' && renderSingleTradeTab()}
     </div>
