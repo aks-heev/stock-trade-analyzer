@@ -507,3 +507,100 @@ body {
     margin-top: 5px;
   }
 }
+
+/* Live Prices Styles */
+.card-header-with-action {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 15px;
+}
+
+.card-header-with-action h2 {
+  margin-bottom: 0;
+}
+
+.btn-live-prices {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+  padding: 10px 20px;
+  font-size: 0.95em;
+  border-radius: 8px;
+  transition: all 0.3s ease;
+  animation: glow 2s ease-in-out infinite;
+}
+
+@keyframes glow {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(16, 185, 129, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+  }
+}
+
+.btn-live-prices:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 20px rgba(16, 185, 129, 0.4);
+}
+
+.btn-refresh {
+  background: var(--bg);
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  padding: 10px 20px;
+  font-size: 0.95em;
+  border-radius: 8px;
+}
+
+.btn-refresh:hover:not(:disabled) {
+  background: rgba(50, 168, 153, 0.1);
+}
+
+.hint-banner {
+  background: rgba(50, 168, 153, 0.1);
+  border: 1px solid rgba(50, 168, 153, 0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  font-size: 0.9em;
+  color: var(--text-secondary);
+}
+
+.live-price {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.day-change {
+  font-size: 0.75em;
+  font-weight: 500;
+}
+
+.day-change.positive {
+  color: var(--success);
+}
+
+.day-change.negative {
+  color: var(--error);
+}
+
+.price-unavailable {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+@media (max-width: 768px) {
+  .card-header-with-action {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .btn-live-prices,
+  .btn-refresh {
+    width: 100%;
+  }
+}

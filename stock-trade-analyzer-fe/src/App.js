@@ -21,6 +21,8 @@ const TradeAnalyzer = () => {
   const [upstoxUser, setUpstoxUser] = useState(null);
   const [upstoxLoading, setUpstoxLoading] = useState(false);
   const [upstoxHoldings, setUpstoxHoldings] = useState(null);
+  const [enrichedPositions, setEnrichedPositions] = useState(null);
+  const [pricesLoading, setPricesLoading] = useState(false);
   const [sessionId, setSessionId] = useState(() => {
     return localStorage.getItem('upstox_session') || `session_${Date.now()}`;
   });
@@ -118,6 +120,36 @@ const TradeAnalyzer = () => {
     setUpstoxConnected(false);
     setUpstoxUser(null);
     setUpstoxHoldings(null);
+    setEnrichedPositions(null);
+  };
+
+  // Fetch live prices for positions from Excel upload
+  const fetchLivePrices = async () => {
+    if (!analysisData?.positions || analysisData.positions.length === 0) {
+      setError('No positions to fetch prices for');
+      return;
+    }
+
+    try {
+      setPricesLoading(true);
+      setError(null);
+      
+      const response = await axios.post(
+        `${API_BASE_URL}/upstox/enrich-positions?session=${sessionId}`,
+        { positions: analysisData.positions }
+      );
+      
+      setEnrichedPositions(response.data);
+    } catch (err) {
+      const errorMessage = err.response?.data?.detail || err.message;
+      if (err.response?.status === 401) {
+        setError('Please connect to Upstox first to fetch live prices');
+      } else {
+        setError('Failed to fetch live prices: ' + errorMessage);
+      }
+    } finally {
+      setPricesLoading(false);
+    }
   };
 
   // File Upload Handler
@@ -152,6 +184,7 @@ const TradeAnalyzer = () => {
       );
 
       setAnalysisData(response.data);
+      setEnrichedPositions(null); // Clear previous enriched data
       setActiveTab('results');
       setFile(null);
     } catch (err) {
@@ -324,36 +357,138 @@ TCS     | 2024-01-20 | BUY       | 3500  | 5        | 17.5
         {/* Current Positions */}
         {positions && positions.length > 0 && (
           <div className="card">
-            <h2>📈 Current Positions ({positions.length})</h2>
-            <div className="table-container">
-              <table className="trades-table">
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Quantity</th>
-                    <th>Avg Price</th>
-                    <th>Total Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {positions.map((position, idx) => (
-                    <tr key={idx}>
-                      <td className="bold">{position.symbol}</td>
-                      <td>{position.quantity}</td>
-                      <td>₹{position.avg_price.toFixed(2)}</td>
-                      <td>₹{position.total_cost.toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr style={{ fontWeight: 'bold', borderTop: '2px solid var(--border)' }}>
-                    <td>Total Investment</td>
-                    <td colSpan="2"></td>
-                    <td>₹{positions.reduce((sum, pos) => sum + pos.total_cost, 0).toFixed(2)}</td>
-                  </tr>
-                </tfoot>
-              </table>
+            <div className="card-header-with-action">
+              <h2>📈 Current Positions ({positions.length})</h2>
+              {upstoxConnected && !enrichedPositions && (
+                <button 
+                  className="btn btn-live-prices"
+                  onClick={fetchLivePrices}
+                  disabled={pricesLoading}
+                >
+                  {pricesLoading ? '⏳ Loading...' : '💹 Get Live Prices'}
+                </button>
+              )}
+              {enrichedPositions && (
+                <button 
+                  className="btn btn-refresh"
+                  onClick={fetchLivePrices}
+                  disabled={pricesLoading}
+                >
+                  {pricesLoading ? '⏳ Refreshing...' : '🔄 Refresh Prices'}
+                </button>
+              )}
             </div>
+            
+            {!upstoxConnected && (
+              <div className="hint-banner">
+                💡 <strong>Tip:</strong> Connect to Upstox to see live prices for your holdings
+              </div>
+            )}
+
+            {/* Show enriched positions if available, otherwise show basic positions */}
+            {enrichedPositions ? (
+              <>
+                {/* Summary Cards */}
+                <div className="metrics-grid" style={{ marginBottom: '20px' }}>
+                  <div className="metric-card">
+                    <div className="metric-value">₹{enrichedPositions.total_cost?.toLocaleString()}</div>
+                    <div className="metric-label">Total Investment</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-value">₹{enrichedPositions.total_current_value?.toLocaleString()}</div>
+                    <div className="metric-label">Current Value</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-value" style={{ color: enrichedPositions.total_unrealized_pnl > 0 ? '#22c55e' : '#ef4444' }}>
+                      ₹{enrichedPositions.total_unrealized_pnl?.toLocaleString()}
+                    </div>
+                    <div className="metric-label">Unrealized P&L</div>
+                  </div>
+                  <div className="metric-card">
+                    <div className="metric-value" style={{ color: enrichedPositions.total_pnl_percent > 0 ? '#22c55e' : '#ef4444' }}>
+                      {enrichedPositions.total_pnl_percent?.toFixed(2)}%
+                    </div>
+                    <div className="metric-label">Overall Return</div>
+                  </div>
+                </div>
+
+                <div className="table-container">
+                  <table className="trades-table">
+                    <thead>
+                      <tr>
+                        <th>Symbol</th>
+                        <th>Qty</th>
+                        <th>Avg Price</th>
+                        <th>Current Price</th>
+                        <th>Total Cost</th>
+                        <th>Current Value</th>
+                        <th>Unrealized P&L</th>
+                        <th>Return %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {enrichedPositions.positions.map((pos, idx) => (
+                        <tr key={idx}>
+                          <td className="bold">{pos.symbol}</td>
+                          <td>{pos.quantity}</td>
+                          <td>₹{pos.avg_price?.toFixed(2)}</td>
+                          <td>
+                            {pos.price_available ? (
+                              <span className="live-price">
+                                ₹{pos.current_price?.toFixed(2)}
+                                <span className={`day-change ${pos.day_change_percent > 0 ? 'positive' : 'negative'}`}>
+                                  ({pos.day_change_percent > 0 ? '+' : ''}{pos.day_change_percent?.toFixed(2)}%)
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="price-unavailable">N/A</span>
+                            )}
+                          </td>
+                          <td>₹{pos.total_cost?.toFixed(2)}</td>
+                          <td>{pos.price_available ? `₹${pos.current_value?.toFixed(2)}` : '—'}</td>
+                          <td className={pos.unrealized_pnl > 0 ? 'positive' : pos.unrealized_pnl < 0 ? 'negative' : ''}>
+                            {pos.price_available ? `₹${pos.unrealized_pnl?.toFixed(2)}` : '—'}
+                          </td>
+                          <td className={pos.pnl_percent > 0 ? 'positive' : pos.pnl_percent < 0 ? 'negative' : ''}>
+                            {pos.price_available ? `${pos.pnl_percent?.toFixed(2)}%` : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <div className="table-container">
+                <table className="trades-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Quantity</th>
+                      <th>Avg Price</th>
+                      <th>Total Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.map((position, idx) => (
+                      <tr key={idx}>
+                        <td className="bold">{position.symbol}</td>
+                        <td>{position.quantity}</td>
+                        <td>₹{position.avg_price.toFixed(2)}</td>
+                        <td>₹{position.total_cost.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ fontWeight: 'bold', borderTop: '2px solid var(--border)' }}>
+                      <td>Total Investment</td>
+                      <td colSpan="2"></td>
+                      <td>₹{positions.reduce((sum, pos) => sum + pos.total_cost, 0).toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
