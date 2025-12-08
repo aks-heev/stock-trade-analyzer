@@ -18,6 +18,10 @@
 
 - **Name**: `stock-trade-analyzer-backend` (or your preferred name)
 - **Environment**: `Python 3`
+- **Python Version**: **IMPORTANT** - Set to `3.11.9` (or 3.11.x) in Render dashboard
+  - Go to: Settings → Environment → Python Version
+  - Select: `3.11.9` or `3.11`
+  - **Why?** pandas 2.2.0 doesn't have pre-built wheels for Python 3.13, causing build failures
 - **Build Command**: `pip install -r requirements.txt`
 - **Start Command**: (Leave empty - Procfile will be used automatically)
   - Or manually: `uvicorn stock_analyzer_backend_v2:app --host 0.0.0.0 --port $PORT`
@@ -54,8 +58,25 @@ curl https://your-app-name.onrender.com/
 ## Troubleshooting
 
 ### Build Fails
+
+#### Python Version Issue (pandas build failure)
+**Error**: `error: metadata-generation-failed` when building pandas
+
+**Solution**: 
+1. **Manually set Python version in Render Dashboard**:
+   - Go to your service → Settings → Environment
+   - Set "Python Version" to `3.11.9` or `3.11`
+   - Save and redeploy
+   
+2. **Why this happens**: 
+   - pandas 2.2.0 doesn't have pre-built wheels for Python 3.13
+   - Building from source fails due to Cython/C++ compilation issues
+   - Python 3.11 has pre-built wheels available
+
+#### Other Build Issues
 - Check that `requirements.txt` has all dependencies
-- Verify Python version in `runtime.txt` matches Render's supported versions
+- Verify Python version in `runtime.txt` is `3.11.9` (format: just the version number)
+- Ensure `Procfile` exists and has correct format (no trailing newlines)
 
 ### App Crashes
 - Check Render logs: Dashboard → Your Service → Logs
